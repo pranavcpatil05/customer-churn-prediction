@@ -8,6 +8,8 @@ from src.retention import generate_offer
 import time
 from src.database import init_db, save_predictions, load_history, clear_history
 from src.simulator import new_customers
+from src.report import compute_stats, build_pdf
+from src.retention import executive_summary
 
 st.set_page_config(page_title="ChurnGuard | Churn Risk Predictor",
             page_icon="📉", layout="wide")
@@ -110,9 +112,9 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab1, tab2, tab5, tab3, tab4 = st.tabs(
-    ["🔮 Single Customer", "📂 Bulk Analysis", "📡 Live Monitor",
-    "📊 Model Insights", "ℹ️ About"])
+tab1, tab2, tab5, tab6, tab3, tab4 = st.tabs(
+    ["🧑‍💼 Agent View", "📂 Bulk Analysis", "📡 Live Monitor",
+    "🏢 Executive View", "📊 Model Insights", "ℹ️ About"])
 
 # ---------- Tab 1: Single customer ----------
 with tab1:
@@ -362,3 +364,55 @@ with tab5:
         if st.button("🗑️ Clear history"):
             clear_history()
             st.rerun()
+
+# ---------- Tab 6: Executive view ----------
+with tab6:
+    st.subheader("Executive Dashboard")
+    hist_all = load_history(5000)
+    if hist_all.empty:
+        st.info("No data yet. Run the live stream or save a bulk analysis first.")
+    else:
+        d = hist_all.drop_duplicates("customer")   # latest prediction per customer
+        s = compute_stats(d)
+
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("Customers analysed", s["customers"])
+        e2.metric("High risk", s["high"])
+        e3.metric("Revenue at risk / month", f"${s['rev_risk']:,.0f}")
+        e4.metric("High-risk monthly bills", f"${s['high_rev']:,.0f}")
+
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            st.markdown("##### Risk distribution")
+            cnt = d["risk_level"].value_counts().reset_index()
+            cnt.columns = ["Risk Level", "Customers"]
+            fig_p = px.pie(cnt, names="Risk Level", values="Customers", hole=0.5,
+                        color="Risk Level",
+                        color_discrete_map={"High": "#DC2626", "Medium": "#D97706",
+                                        "Low": "#16A34A"})
+            fig_p.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig_p, width="stretch")
+        with ch2:
+            st.markdown("##### Average risk by contract")
+            by_c = d.groupby("contract")["risk_score"].mean().round(1).reset_index()
+            fig_c = px.bar(by_c, x="contract", y="risk_score",
+                        labels={"risk_score": "Average risk (%)", "contract": ""},
+                        color_discrete_sequence=["#1E40AF"])
+            fig_c.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig_c, width="stretch")
+
+        st.markdown("##### 🚨 High-risk queue (highest first)")
+        queue = (d[d["risk_level"] == "High"]
+                .sort_values("risk_score", ascending=False).head(15))
+        st.dataframe(queue[["customer", "contract", "tenure", "monthly", "risk_score"]],
+                width="stretch", hide_index=True)
+
+        st.divider()
+        st.markdown("##### 📄 Executive Churn Audit Report (PDF)")
+        if st.button("Generate PDF report"):
+            with st.spinner("Writing summary and building PDF..."):
+                st.session_state["pdf_bytes"] = build_pdf(d, executive_summary(s))
+        if "pdf_bytes" in st.session_state:
+            st.download_button("⬇️ Download Executive Report (PDF)",
+                            st.session_state["pdf_bytes"],
+                            "churn_executive_report.pdf", "application/pdf")
