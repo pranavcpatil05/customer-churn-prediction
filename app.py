@@ -5,9 +5,12 @@ import plotly.graph_objects as go
 import plotly.express as px
 from src.explain import get_drivers
 from src.retention import generate_offer
+import time
+from src.database import init_db, save_predictions, load_history, clear_history
+from src.simulator import new_customers
 
 st.set_page_config(page_title="ChurnGuard | Churn Risk Predictor",
-                   page_icon="📉", layout="wide")
+            page_icon="📉", layout="wide")
 
 # ---------- Styling ----------
 st.markdown("""
@@ -15,7 +18,7 @@ st.markdown("""
 .block-container {padding-top: 1.5rem; max-width: 1150px;}
 #MainMenu, footer {visibility: hidden;}
 .hero {background: linear-gradient(135deg, #0F172A 0%, #1E3A8A 100%);
-       padding: 26px 32px; border-radius: 14px; margin-bottom: 18px;}
+    padding: 26px 32px; border-radius: 14px; margin-bottom: 18px;}
 .hero h1 {color: #FFFFFF; margin: 0; font-size: 1.9rem;}
 .hero p {color: #CBD5E1; margin: 6px 0 0 0;}
 .risk-card {padding: 18px 20px; border-radius: 12px; border-left: 8px solid;
@@ -41,6 +44,7 @@ def load_files():
             float(joblib.load("models/threshold.pkl")))
 
 model, scaler, columns, threshold = load_files()
+init_db()
 
 REQUIRED = ["gender", "SeniorCitizen", "Partner", "Dependents", "tenure",
             "PhoneService", "MultipleLines", "InternetService", "OnlineSecurity",
@@ -106,8 +110,9 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["🔮 Single Customer", "📂 Bulk Analysis", "📊 Model Insights", "ℹ️ About"])
+tab1, tab2, tab5, tab3, tab4 = st.tabs(
+    ["🔮 Single Customer", "📂 Bulk Analysis", "📡 Live Monitor",
+    "📊 Model Insights", "ℹ️ About"])
 
 # ---------- Tab 1: Single customer ----------
 with tab1:
@@ -167,6 +172,8 @@ with tab1:
         prob = float(model.predict_proba(row)[0][1])
         score = round(prob * 100, 1)
         level, css, color, msg = risk_info(prob)
+        save_predictions([(cust_name, "Single", int(tenure), contract, internet,
+                float(monthly), score, level.split()[0].title())])
 
         st.divider()
         left, right = st.columns(2)
@@ -183,9 +190,9 @@ with tab1:
         st.markdown("##### 🔍 Why this score? (Explainable AI using SHAP)")
         drivers = get_drivers(model, row)
         fig_x = px.bar(drivers.iloc[::-1], x="Share of impact (%)", y="Factor",
-                       color="Effect", orientation="h",
-                       color_discrete_map={"Increases risk": "#DC2626",
-                                           "Reduces risk": "#16A34A"})
+                    color="Effect", orientation="h",
+                    color_discrete_map={"Increases risk": "#DC2626",
+                                        "Reduces risk": "#16A34A"})
         fig_x.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig_x, width="stretch")
 
@@ -203,7 +210,7 @@ with tab1:
 with tab2:
     st.subheader("Bulk Customer Risk Analysis")
     st.write("Upload a CSV file of customers (same columns as the Telco dataset). "
-             "The system scores every customer and ranks them by churn risk.")
+            "The system scores every customer and ranks them by churn risk.")
     file = st.file_uploader("Upload customer CSV", type="csv")
 
     if file is not None:
@@ -224,7 +231,7 @@ with tab2:
                 "Monthly Charges": df_up["MonthlyCharges"],
                 "Risk Score (%)": (probs * 100).round(1)})
             out["Risk Level"] = pd.cut(probs, [-0.01, 0.4, threshold, 1.01],
-                                       labels=["Low", "Medium", "High"])
+                                labels=["Low", "Medium", "High"])
             out = out.sort_values("Risk Score (%)", ascending=False)
 
             k1, k2, k3, k4 = st.columns(4)
@@ -236,26 +243,33 @@ with tab2:
             counts = out["Risk Level"].value_counts().reset_index()
             counts.columns = ["Risk Level", "Customers"]
             fig = px.pie(counts, names="Risk Level", values="Customers", hole=0.5,
-                         color="Risk Level",
-                         color_discrete_map={"High": "#DC2626", "Medium": "#D97706",
-                                             "Low": "#16A34A"})
+                        color="Risk Level",
+                        color_discrete_map={"High": "#DC2626", "Medium": "#D97706",
+                                            "Low": "#16A34A"})
             fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, width="stretch")
 
             st.markdown("##### Customers ranked by risk (highest first)")
             st.dataframe(out, width="stretch", hide_index=True,
-                         column_config={"Risk Score (%)": st.column_config.ProgressColumn(
-                             "Risk Score (%)", min_value=0, max_value=100, format="%.1f")})
+                        column_config={"Risk Score (%)": st.column_config.ProgressColumn(
+                            "Risk Score (%)", min_value=0, max_value=100, format="%.1f")})
             st.download_button("⬇️ Download results as CSV",
-                               out.to_csv(index=False), "churn_risk_results.csv",
-                               "text/csv")
+                            out.to_csv(index=False), "churn_risk_results.csv",
+                            "text/csv")
+            if st.button("💾 Save these results to database"):
+                recs = [(str(r["Customer"]), "Bulk", int(r["Tenure"]),
+                        str(r["Contract"]), "-", float(r["Monthly Charges"]),
+                        float(r["Risk Score (%)"]), str(r["Risk Level"]))
+                        for _, r in out.iterrows()]
+                save_predictions(recs)
+                st.success(f"Saved {len(recs)} customers to the database.")
 
 # ---------- Tab 3: Model insights ----------
 with tab3:
     st.subheader("Model Comparison")
     try:
         st.dataframe(pd.read_csv("models/model_comparison.csv"),
-                     width="stretch", hide_index=True)
+                    width="stretch", hide_index=True)
     except Exception:
         st.info("model_comparison.csv not found in the models folder.")
 
@@ -264,7 +278,7 @@ with tab3:
     top = imp.sort_values().tail(10).reset_index()
     top.columns = ["Feature", "Importance"]
     fig = px.bar(top, x="Importance", y="Feature", orientation="h",
-                 color_discrete_sequence=["#1E40AF"])
+                color_discrete_sequence=["#1E40AF"])
     fig.update_layout(height=400, margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig, width="stretch")
 
@@ -286,3 +300,65 @@ with tab4:
     - **Risk levels:** Low (below 40%), Medium (40% to cut-off), High (cut-off and above)
     - **Tools:** Python, Pandas, Scikit-learn, XGBoost, SHAP, Streamlit, Plotly
     """)
+
+# ---------- Tab 5: Live monitor ----------
+with tab5:
+    st.subheader("Live Monitor and Prediction History")
+    st.write("Simulate new customers arriving in real time. Each one is scored "
+            "by the model and saved in the database.")
+
+    s1, s2, s3 = st.columns(3)
+    n_per = s1.number_input("Customers per tick", 1, 20, 5)
+    ticks = s2.number_input("Number of ticks", 1, 30, 6)
+    delay = s3.number_input("Seconds between ticks", 0.5, 5.0, 1.0)
+    run_stream = st.button("▶️ Start live stream", type="primary")
+
+    status = st.empty()
+    feed = st.empty()
+
+    def level_of(p):
+        return "High" if p >= threshold else ("Medium" if p >= 0.4 else "Low")
+
+    if run_stream:
+        for t in range(int(ticks)):
+            batch = new_customers(int(n_per))
+            probs = model.predict_proba(preprocess(batch[REQUIRED]))[:, 1]
+            recs = []
+            for (_, r), p in zip(batch.iterrows(), probs):
+                recs.append((str(r["customerID"]), "Simulator", int(r["tenure"]),
+                            str(r["Contract"]), str(r["InternetService"]),
+                            float(r["MonthlyCharges"]),
+                             round(float(p) * 100, 1), level_of(float(p))))
+            save_predictions(recs)
+            show = pd.DataFrame(recs, columns=[
+                "Customer", "Source", "Tenure", "Contract", "Internet",
+                "Monthly", "Risk Score (%)", "Risk Level"])
+            status.info(f"Tick {t + 1} of {int(ticks)}: "
+                        f"{len(recs)} new customers scored and saved.")
+            feed.dataframe(show, width="stretch", hide_index=True)
+            time.sleep(float(delay))
+        status.success("Stream finished.")
+
+    st.divider()
+    st.markdown("##### 🗄️ Prediction history (from database)")
+    hist = load_history()
+    if hist.empty:
+        st.info("No predictions saved yet. Make a prediction or start the live stream.")
+    else:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total saved", len(hist))
+        m2.metric("High risk", int((hist["risk_level"] == "High").sum()))
+        m3.metric("Average risk", f"{hist['risk_score'].mean():.1f}%")
+        m4.metric("Last saved", hist["created_at"].iloc[0][11:])
+
+        trend = hist.iloc[::-1].reset_index(drop=True)
+        trend["Average risk (%)"] = trend["risk_score"].rolling(10, min_periods=1).mean()
+        fig_t = px.line(trend, y="Average risk (%)",
+                        labels={"index": "Prediction number"})
+        fig_t.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_t, width="stretch")
+
+        st.dataframe(hist, width="stretch", hide_index=True)
+        if st.button("🗑️ Clear history"):
+            clear_history()
+            st.rerun()
