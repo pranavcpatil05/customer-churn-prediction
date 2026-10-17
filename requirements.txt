@@ -10,3 +10,4 @@ google-genai
 python-dotenv
 fpdf2
 matplotlib
+shap
