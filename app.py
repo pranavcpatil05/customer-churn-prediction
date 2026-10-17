@@ -4,6 +4,7 @@ import joblib
 import plotly.graph_objects as go
 import plotly.express as px
 from src.explain import get_drivers
+from src.retention import generate_offer
 
 st.set_page_config(page_title="ChurnGuard | Churn Risk Predictor",
                    page_icon="📉", layout="wide")
@@ -125,6 +126,7 @@ with tab1:
                 "Electronic check", "Mailed check",
                 "Bank transfer (automatic)", "Credit card (automatic)"])
             st.caption("Total Charges is calculated automatically (tenure x monthly).")
+            cust_name = st.text_input("Customer name", "Alex")
 
         with st.expander("Advanced details (optional)"):
             a1, a2, a3 = st.columns(3)
@@ -144,7 +146,7 @@ with tab1:
                 movies = st.selectbox("Streaming Movies", ["No", "Yes"])
 
         submitted = st.form_submit_button("🔍 Predict Churn Risk",
-        type="primary", width="stretch")
+                                          type="primary", width="stretch")
 
     if submitted:
         no_net = internet == "No"
@@ -173,21 +175,35 @@ with tab1:
         with right:
             st.markdown(f"""<div class="risk-card {css}">
                 <h3>{level}</h3><p>{msg}</p></div>""", unsafe_allow_html=True)
-        st.markdown("##### 💡 Recommended retention actions")
+            st.markdown("##### 💡 Recommended retention actions")
+            for tip in get_actions(contract, tech, internet, payment, tenure, monthly):
+                st.markdown(f"- {tip}")
+
+        # ----- Explainable AI (SHAP) -----
         st.markdown("##### 🔍 Why this score? (Explainable AI using SHAP)")
         drivers = get_drivers(model, row)
         fig_x = px.bar(drivers.iloc[::-1], x="Share of impact (%)", y="Factor",
-        color="Effect", orientation="h",
-        color_discrete_map={"Increases risk": "#DC2626",
-        "Reduces risk": "#16A34A"})
+                       color="Effect", orientation="h",
+                       color_discrete_map={"Increases risk": "#DC2626",
+                                           "Reduces risk": "#16A34A"})
         fig_x.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig_x, width='stretch')
+        st.plotly_chart(fig_x, width="stretch")
+
+        # ----- Gemini retention message -----
+        if prob >= 0.4:
+            st.markdown("##### ✉️ AI-generated retention message (Gemini)")
+            with st.spinner("Gemini is writing a personalised offer..."):
+                offer = generate_offer(cust_name, level, drivers, contract, monthly)
+            st.caption("Source: " + offer["source"])
+            t_mail, t_sms = st.tabs(["📧 Email", "💬 SMS"])
+            t_mail.text(offer["email"])
+            t_sms.text(offer["sms"])
 
 # ---------- Tab 2: Bulk analysis ----------
 with tab2:
     st.subheader("Bulk Customer Risk Analysis")
     st.write("Upload a CSV file of customers (same columns as the Telco dataset). "
-            "The system scores every customer and ranks them by churn risk.")
+             "The system scores every customer and ranks them by churn risk.")
     file = st.file_uploader("Upload customer CSV", type="csv")
 
     if file is not None:
@@ -208,7 +224,7 @@ with tab2:
                 "Monthly Charges": df_up["MonthlyCharges"],
                 "Risk Score (%)": (probs * 100).round(1)})
             out["Risk Level"] = pd.cut(probs, [-0.01, 0.4, threshold, 1.01],
-            labels=["Low", "Medium", "High"])
+                                       labels=["Low", "Medium", "High"])
             out = out.sort_values("Risk Score (%)", ascending=False)
 
             k1, k2, k3, k4 = st.columns(4)
@@ -220,26 +236,26 @@ with tab2:
             counts = out["Risk Level"].value_counts().reset_index()
             counts.columns = ["Risk Level", "Customers"]
             fig = px.pie(counts, names="Risk Level", values="Customers", hole=0.5,
-                        color="Risk Level",
-                        color_discrete_map={"High": "#DC2626", "Medium": "#D97706",
-                        "Low": "#16A34A"})
+                         color="Risk Level",
+                         color_discrete_map={"High": "#DC2626", "Medium": "#D97706",
+                                             "Low": "#16A34A"})
             fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, width="stretch")
 
             st.markdown("##### Customers ranked by risk (highest first)")
             st.dataframe(out, width="stretch", hide_index=True,
-                        column_config={"Risk Score (%)": st.column_config.ProgressColumn(
-                            "Risk Score (%)", min_value=0, max_value=100, format="%.1f")})
+                         column_config={"Risk Score (%)": st.column_config.ProgressColumn(
+                             "Risk Score (%)", min_value=0, max_value=100, format="%.1f")})
             st.download_button("⬇️ Download results as CSV",
-                            out.to_csv(index=False), "churn_risk_results.csv",
-                            "text/csv")
+                               out.to_csv(index=False), "churn_risk_results.csv",
+                               "text/csv")
 
 # ---------- Tab 3: Model insights ----------
 with tab3:
     st.subheader("Model Comparison")
     try:
         st.dataframe(pd.read_csv("models/model_comparison.csv"),
-                    width="stretch", hide_index=True)
+                     width="stretch", hide_index=True)
     except Exception:
         st.info("model_comparison.csv not found in the models folder.")
 
@@ -264,8 +280,9 @@ with tab4:
     - **Dataset:** Telco Customer Churn (7,043 customers, 21 columns)
     - **Algorithms compared:** Logistic Regression, Random Forest, XGBoost
     - **Final model:** XGBoost
+    - **Explainability:** SHAP (TreeExplainer)
+    - **Retention messages:** Google Gemini
     - **High-risk cut-off:** {threshold:.2f}
     - **Risk levels:** Low (below 40%), Medium (40% to cut-off), High (cut-off and above)
-    - **Tools:** Python, Pandas, Scikit-learn, XGBoost, Streamlit, Plotly
+    - **Tools:** Python, Pandas, Scikit-learn, XGBoost, SHAP, Streamlit, Plotly
     """)
-    
