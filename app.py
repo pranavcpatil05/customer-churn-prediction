@@ -3,6 +3,7 @@ import pandas as pd
 import joblib
 import plotly.graph_objects as go
 import plotly.express as px
+from src.explain import get_drivers
 
 st.set_page_config(page_title="ChurnGuard | Churn Risk Predictor",
                    page_icon="📉", layout="wide")
@@ -143,7 +144,7 @@ with tab1:
                 movies = st.selectbox("Streaming Movies", ["No", "Yes"])
 
         submitted = st.form_submit_button("🔍 Predict Churn Risk",
-                                          type="primary", width="stretch")
+        type="primary", width="stretch")
 
     if submitted:
         no_net = internet == "No"
@@ -160,7 +161,8 @@ with tab1:
             "PaperlessBilling": paperless, "PaymentMethod": payment,
             "MonthlyCharges": monthly, "TotalCharges": monthly * tenure}])
 
-        prob = float(model.predict_proba(preprocess(raw))[0][1])
+        row = preprocess(raw)
+        prob = float(model.predict_proba(row)[0][1])
         score = round(prob * 100, 1)
         level, css, color, msg = risk_info(prob)
 
@@ -171,15 +173,21 @@ with tab1:
         with right:
             st.markdown(f"""<div class="risk-card {css}">
                 <h3>{level}</h3><p>{msg}</p></div>""", unsafe_allow_html=True)
-            st.markdown("##### 💡 Recommended retention actions")
-            for tip in get_actions(contract, tech, internet, payment, tenure, monthly):
-                st.markdown(f"- {tip}")
+        st.markdown("##### 💡 Recommended retention actions")
+        st.markdown("##### 🔍 Why this score? (Explainable AI using SHAP)")
+        drivers = get_drivers(model, row)
+        fig_x = px.bar(drivers.iloc[::-1], x="Share of impact (%)", y="Factor",
+        color="Effect", orientation="h",
+        color_discrete_map={"Increases risk": "#DC2626",
+        "Reduces risk": "#16A34A"})
+        fig_x.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_x, width='stretch')
 
 # ---------- Tab 2: Bulk analysis ----------
 with tab2:
     st.subheader("Bulk Customer Risk Analysis")
     st.write("Upload a CSV file of customers (same columns as the Telco dataset). "
-             "The system scores every customer and ranks them by churn risk.")
+            "The system scores every customer and ranks them by churn risk.")
     file = st.file_uploader("Upload customer CSV", type="csv")
 
     if file is not None:
@@ -200,7 +208,7 @@ with tab2:
                 "Monthly Charges": df_up["MonthlyCharges"],
                 "Risk Score (%)": (probs * 100).round(1)})
             out["Risk Level"] = pd.cut(probs, [-0.01, 0.4, threshold, 1.01],
-                                       labels=["Low", "Medium", "High"])
+            labels=["Low", "Medium", "High"])
             out = out.sort_values("Risk Score (%)", ascending=False)
 
             k1, k2, k3, k4 = st.columns(4)
@@ -212,26 +220,26 @@ with tab2:
             counts = out["Risk Level"].value_counts().reset_index()
             counts.columns = ["Risk Level", "Customers"]
             fig = px.pie(counts, names="Risk Level", values="Customers", hole=0.5,
-                         color="Risk Level",
-                         color_discrete_map={"High": "#DC2626", "Medium": "#D97706",
-                                             "Low": "#16A34A"})
+                        color="Risk Level",
+                        color_discrete_map={"High": "#DC2626", "Medium": "#D97706",
+                        "Low": "#16A34A"})
             fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, width="stretch")
 
             st.markdown("##### Customers ranked by risk (highest first)")
             st.dataframe(out, width="stretch", hide_index=True,
-                         column_config={"Risk Score (%)": st.column_config.ProgressColumn(
-                             "Risk Score (%)", min_value=0, max_value=100, format="%.1f")})
+                        column_config={"Risk Score (%)": st.column_config.ProgressColumn(
+                            "Risk Score (%)", min_value=0, max_value=100, format="%.1f")})
             st.download_button("⬇️ Download results as CSV",
-                               out.to_csv(index=False), "churn_risk_results.csv",
-                               "text/csv")
+                            out.to_csv(index=False), "churn_risk_results.csv",
+                            "text/csv")
 
 # ---------- Tab 3: Model insights ----------
 with tab3:
     st.subheader("Model Comparison")
     try:
         st.dataframe(pd.read_csv("models/model_comparison.csv"),
-                     width="stretch", hide_index=True)
+                    width="stretch", hide_index=True)
     except Exception:
         st.info("model_comparison.csv not found in the models folder.")
 
